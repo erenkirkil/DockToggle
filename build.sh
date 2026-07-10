@@ -3,7 +3,7 @@
 # Sabit imza sayesinde Erişilebilirlik izni her yeniden derlemede korunur.
 set -e
 
-SRC="$HOME/DockToggle-src"
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPDIR="$HOME/Applications"
 APP="$APPDIR/DockToggle.app"
 KC="$HOME/Library/Keychains/docktoggle-signing.keychain-db"
@@ -19,6 +19,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$SRC/DockToggle" "$APP/Contents/MacOS/DockToggle"
 cp "$SRC/Info.plist" "$APP/Contents/Info.plist"
+if [ -f "$SRC/AppIcon.icns" ]; then
+    cp "$SRC/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+fi
 chmod +x "$APP/Contents/MacOS/DockToggle"
 
 echo "== Sabit sertifikayla imzalanıyor =="

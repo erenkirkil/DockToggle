@@ -162,6 +162,9 @@ func eventTapCallback(proxy: CGEventTapProxy,
     case .leftMouseDown:
         if !isEnabled { return passthrough }
 
+        // Mission Control / App Exposé açıkken tıklama uygulamayı/pencereyi öne getirmeli, gizlememeli.
+        if missionControlActive() { return passthrough }
+
         // Düz sol tık dışındaki her şeyi (Ctrl/Cmd/Opt/Shift) Dock'a bırak —
         // Ctrl-tık bağlam menüsü, Cmd-tık "Finder'da göster" vb. bozulmasın.
         let mods = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl, .maskShift])
@@ -214,6 +217,8 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var healthTimer: Timer?
     var tapFailureAlertShown = false
+    let hoverController = HoverPreviewController()
+    let hoverMenuItem = NSMenuItem(title: "Pencere Önizlemeleri", action: #selector(toggleHoverPreviews), keyEquivalent: "")
 
     let statusMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     let pauseMenuItem  = NSMenuItem(title: "Etkin", action: #selector(togglePause), keyEquivalent: "")
@@ -228,11 +233,16 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         startTapThread()   // tap callback'ini ana UI iş parçacığından ayır
         syncState()
+        // Varsayılan: kapalı. Kullanıcı bir kez açtıysa kalıcı tercihi uygula.
+        let prefs = UserDefaults.standard
+        let hoverOn = prefs.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false
+        syncHoverController(desired: hoverOn)
 
         // Yedek sağlık zamanlayıcısı: artık izin/tap durumu çoğunlukla olay-tetikli güncelleniyor,
         // bu yalnızca emniyet ağı -> seyrek aralık + tolerans ile uyandırma birleştirmeye izin ver.
         healthTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
             self?.syncState()
+            self?.rebuildEnv()   // Dock boyu/yönü/auto-hide değişimini uygulama geçişi olmadan da yakala
         }
         healthTimer?.tolerance = 5.0
 
@@ -315,6 +325,8 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pauseMenuItem)
         loginMenuItem.target = self
         menu.addItem(loginMenuItem)
+        hoverMenuItem.target = self
+        menu.addItem(hoverMenuItem)
         let axItem = NSMenuItem(title: "Erişilebilirlik Ayarlarını Aç", action: #selector(openAccessibilitySettings), keyEquivalent: "")
         axItem.target = self
         menu.addItem(axItem)
@@ -346,10 +358,15 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else if let tap = eventTap, !CGEvent.tapIsEnabled(tap: tap) {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
-        } else if eventTap != nil {
-            teardownTap()       // izin sonradan kaldırıldı -> ölü tap'i bırak, menüyü düzelt
+            if !MissionControlWatcher.shared.isRunning { MissionControlWatcher.shared.start() }
+        } else {
+            if eventTap != nil {
+                teardownTap()       // izin sonradan kaldırıldı -> ölü tap'i bırak, menüyü düzelt
+            }
+            MissionControlWatcher.shared.stop()
         }
         updateActivationUI(trusted: trusted)
+        syncHoverController(desired: UserDefaults.standard.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false)
     }
 
     func startTap() {
@@ -421,12 +438,28 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             loginMenuItem.title = "Girişte Otomatik Başlat"
             loginMenuItem.state = .off
         }
+        hoverMenuItem.state = (UserDefaults.standard.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false) ? .on : .off
     }
 
     @objc func togglePause() {
         isEnabled.toggle()
         if !isEnabled { suppressNextLeftMouseUp = false }
+        syncHoverController(desired: UserDefaults.standard.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false)
         refreshMenuItems()
+    }
+
+    @objc func toggleHoverPreviews() {
+        let now = !(UserDefaults.standard.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false)
+        UserDefaults.standard.set(now, forKey: "hoverPreviewsEnabled")
+        syncHoverController(desired: now)
+        refreshMenuItems()
+    }
+
+    // Controller yalnızca: özellik açık + Erişilebilirlik izni var + duraklatılmamış iken çalışır.
+    func syncHoverController(desired: Bool) {
+        let live = desired && AXIsProcessTrusted() && isEnabled
+        hoverController.enabled = live
+        hoverMenuItem.state = desired ? .on : .off
     }
 
     @objc func toggleLogin() {

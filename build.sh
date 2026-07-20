@@ -10,7 +10,7 @@ KC="$HOME/Library/Keychains/docktoggle-signing.keychain-db"
 CERT="DockToggle Self-Signed"
 
 echo "== Derleniyor =="
-swiftc -O -swift-version 5 "$SRC/main.swift" -o "$SRC/DockToggle" \
+swiftc -O -swift-version 5 "$SRC"/*.swift -o "$SRC/DockToggle" \
   -framework Cocoa -framework ApplicationServices -framework ServiceManagement
 
 echo "== .app paketi oluşturuluyor =="

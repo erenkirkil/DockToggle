@@ -11,7 +11,8 @@ CERT="DockToggle Self-Signed"
 
 echo "== Derleniyor =="
 swiftc -O -swift-version 5 "$SRC"/*.swift -o "$SRC/DockToggle" \
-  -framework Cocoa -framework ApplicationServices -framework ServiceManagement
+  -framework Cocoa -framework ApplicationServices -framework ServiceManagement \
+  -framework ScreenCaptureKit
 
 echo "== .app paketi oluşturuluyor =="
 mkdir -p "$APPDIR"

@@ -4,15 +4,15 @@
 set -e
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APPDIR="$HOME/Applications"
+APPDIR="/Applications"
 APP="$APPDIR/DockToggle.app"
+USER_APP="$HOME/Applications/DockToggle.app"
 KC="$HOME/Library/Keychains/docktoggle-signing.keychain-db"
 CERT="DockToggle Self-Signed"
 
 echo "== Derleniyor =="
-swiftc -O -swift-version 5 "$SRC"/*.swift -o "$SRC/DockToggle" \
-  -framework Cocoa -framework ApplicationServices -framework ServiceManagement \
-  -framework ScreenCaptureKit
+swiftc -O -swift-version 6 "$SRC"/*.swift -o "$SRC/DockToggle" \
+  -framework Cocoa -framework ApplicationServices -framework ServiceManagement
 
 echo "== .app paketi oluşturuluyor =="
 mkdir -p "$APPDIR"
@@ -36,4 +36,9 @@ codesign --force --deep --sign "$CERT" "$APP"
 
 echo "== Designated requirement (cdhash yerine sertifika kimliği olmalı) =="
 codesign -d -r- "$APP" 2>&1 | tail -3
-echo "OK: $APP"
+
+mkdir -p "$HOME/Applications"
+rm -rf "$USER_APP"
+cp -R "$APP" "$USER_APP"
+
+echo "OK: $APP ve $USER_APP güncellendi"

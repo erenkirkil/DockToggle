@@ -8,11 +8,11 @@ import ApplicationServices
 // (Aynı teknik yabai ve AltTab tarafından da kullanılır.)
 
 private let mcLock = NSLock()
-private var _mcActive = false
+private nonisolated(unsafe) var _mcActive = false
 
 // Tap iş parçacığından çağrılır: yalnızca kilitli bir Bool okur (hızlı, bloklamaz).
-func missionControlActive() -> Bool { mcLock.lock(); defer { mcLock.unlock() }; return _mcActive }
-private func setMissionControlActive(_ v: Bool) { mcLock.lock(); _mcActive = v; mcLock.unlock() }
+nonisolated func missionControlActive() -> Bool { mcLock.lock(); defer { mcLock.unlock() }; return _mcActive }
+private nonisolated func setMissionControlActive(_ v: Bool) { mcLock.lock(); _mcActive = v; mcLock.unlock() }
 
 // Dock.app'in yayımladığı belgesiz bildirim adları — tek belgesiz kısım bunlar (SPI değil, düz string).
 private let kAXExposeShowAllWindows   = "AXExposeShowAllWindows"    // Mission Control (F3)
@@ -23,7 +23,7 @@ private let mcNotificationNames = [kAXExposeShowAllWindows, kAXExposeShowFrontWi
                                    kAXExposeShowDesktop, kAXExposeExit]
 
 // @convention(c) callback: yalnızca globalleri kullanır (bağlam yakalamaz).
-private let mcObserverCallback: AXObserverCallback = { _, _, notification, _ in
+private nonisolated(unsafe) let mcObserverCallback: AXObserverCallback = { _, _, notification, _ in
     switch notification as String {
     case kAXExposeShowAllWindows, kAXExposeShowFrontWindows, kAXExposeShowDesktop:
         // Mission Control / App Exposé / Masaüstünü Göster → tıklama gizlemesin, uygulamayı
@@ -38,6 +38,7 @@ private let mcObserverCallback: AXObserverCallback = { _, _, notification, _ in
 // Mission Control / App Exposé durumunu Dock'a AXObserver takarak izler (yalnızca ana thread).
 // Bildirimler ileride yeniden adlandırılırsa bayrak false kalır (fail-open) → gizleme bugünkü
 // gibi çalışmaya devam eder; "takılı-true" yanlış-pozitifi oluşmaz.
+@MainActor
 final class MissionControlWatcher {
     static let shared = MissionControlWatcher()
 
@@ -72,7 +73,9 @@ final class MissionControlWatcher {
             NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
                 let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-                if app?.bundleIdentifier == "com.apple.dock" { self?.start() }
+                if app?.bundleIdentifier == "com.apple.dock" {
+                    MainActor.assumeIsolated { self?.start() }
+                }
             }
         }
     }

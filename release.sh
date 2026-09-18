@@ -5,11 +5,15 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="DockToggle"
 SIGN_ID="Developer ID Application: EREN KIRKIL (992XYS9346)"
 NOTARY_PROFILE="DOCKTOGGLE_PROFILE" # Kullanıcı bunu ayarlamış olmalı
+VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SRC/Info.plist" 2>/dev/null || echo "1.1.0")
+TAG="v$VERSION"
+DMG_NAME="$SRC/${APP_NAME}_Release.dmg"
+
+echo "== Sürüm: $VERSION ($TAG) =="
 
 echo "1. Uygulama derleniyor..."
-swiftc -O -swift-version 5 "$SRC"/*.swift -o "$SRC/DockToggle" \
-  -framework Cocoa -framework ApplicationServices -framework ServiceManagement \
-  -framework ScreenCaptureKit
+swiftc -O -swift-version 6 "$SRC"/*.swift -o "$SRC/DockToggle" \
+  -framework Cocoa -framework ApplicationServices -framework ServiceManagement
 
 echo "2. .app paketi oluşturuluyor..."
 rm -rf "/tmp/${APP_NAME}_Release"
@@ -29,7 +33,6 @@ echo "3. Uygulama imzalanıyor (.app)..."
 codesign --force --sign "$SIGN_ID" --options runtime --timestamp "$APP_PATH"
 
 echo "4. DMG oluşturuluyor..."
-DMG_NAME="$SRC/${APP_NAME}_Release.dmg"
 rm -f "$DMG_NAME"
 ln -s /Applications "/tmp/${APP_NAME}_Release/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "/tmp/${APP_NAME}_Release" -ov -format UDZO "$DMG_NAME"
@@ -44,4 +47,15 @@ xcrun notarytool submit "$DMG_NAME" --keychain-profile "$NOTARY_PROFILE" --wait
 echo "7. Onay bileti (Ticket) DMG dosyasına iliştiriliyor (Staple)..."
 xcrun stapler staple "$DMG_NAME"
 
-echo "✅ İşlem tamamlandı! $DMG_NAME dosyası dağıtıma hazırdır."
+echo "8. GitHub Release oluşturuluyor..."
+if command -v gh >/dev/null 2>&1; then
+    if gh release view "$TAG" >/dev/null 2>&1; then
+        echo "Release $TAG zaten mevcut, DMG güncelleniyor..."
+        gh release upload "$TAG" "$DMG_NAME" --clobber
+    else
+        echo "Yeni release $TAG oluşturuluyor..."
+        gh release create "$TAG" "$DMG_NAME" --title "DockToggle $TAG" --generate-notes
+    fi
+fi
+
+echo "✅ İşlem tamamlandı! $DMG_NAME dosyası dağıtıma hazırdır ve GitHub Release yayınlandı."

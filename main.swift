@@ -2,17 +2,22 @@ import Cocoa
 import ApplicationServices
 import ServiceManagement
 
-// MARK: - Global durum (C callback'ten erişildiği için global; -swift-version 5)
-var eventTap: CFMachPort?            // yalnızca ana iş parçacığında değiştirilir
-var runLoopSource: CFRunLoopSource?  // yalnızca ana iş parçacığında değiştirilir
-var suppressNextLeftMouseUp = false  // tap iş parçacığında okunur/yazılır
-var isEnabled = true                 // duraklat/devam
+// AX C-API'leri iş parçacığı-güvenlidir; C tipi olduğundan Sendable unchecked işaretlenir.
+extension AXUIElement: @retroactive @unchecked Sendable {}
+
+let axQuickTimeout: Float = 0.05
+
+// MARK: - Global durum (C callback'ten ve tap thread'inden erişilir; Swift 6 nonisolated(unsafe))
+nonisolated(unsafe) var eventTap: CFMachPort?            // yalnızca ana iş parçacığında değiştirilir
+nonisolated(unsafe) var runLoopSource: CFRunLoopSource?  // yalnızca ana iş parçacığında değiştirilir
+nonisolated(unsafe) var suppressNextLeftMouseUp = false  // tap iş parçacığında okunur/yazılır
+nonisolated(unsafe) var isEnabled = true                 // duraklat/devam
 
 // MARK: - Ortam anlık görüntüsü (ana iş parçacığında üretilir, tap iş parçacığında okunur)
 // AX/AppKit'i tap iş parçacığından ÇAĞIRMAMAK için ekran geometrisi, Dock durumu ve
 // ön plandaki uygulama önceden ana iş parçacığında toplanıp kilitle yayımlanır. Böylece
 // callback yalnızca değişmez bir anlık görüntü okur (veri yarışı / off-main AppKit yok).
-final class EnvSnapshot {
+final class EnvSnapshot: @unchecked Sendable {
     let screens: [(frame: CGRect, visible: CGRect)]
     let primaryHeight: CGFloat
     let orientation: String     // "bottom" | "left" | "right"
@@ -34,21 +39,21 @@ final class EnvSnapshot {
         self.frontName = frontName; self.frontIsHidden = frontIsHidden
     }
 }
-let envLock = NSLock()
-var envSnapshot = EnvSnapshot(screens: [], primaryHeight: 0, orientation: "bottom",
+private let envLock = NSLock()
+private nonisolated(unsafe) var envSnapshot = EnvSnapshot(screens: [], primaryHeight: 0, orientation: "bottom",
                               autohide: false, dockTile: 48, magnification: false,
                               front: nil, frontBundlePath: nil,
                               frontName: nil, frontIsHidden: false)
-func currentEnv() -> EnvSnapshot { envLock.lock(); defer { envLock.unlock() }; return envSnapshot }
-func publishEnv(_ e: EnvSnapshot) { envLock.lock(); envSnapshot = e; envLock.unlock() }
+nonisolated func currentEnv() -> EnvSnapshot { envLock.lock(); defer { envLock.unlock() }; return envSnapshot }
+nonisolated func publishEnv(_ e: EnvSnapshot) { envLock.lock(); envSnapshot = e; envLock.unlock() }
 
 // Tap iş parçacığının run loop'u (tap iş parçacığı yayımlar, ana iş parçacığı kaynak eklemek için okur)
-var tapRunLoop: CFRunLoop?
+nonisolated(unsafe) var tapRunLoop: CFRunLoop?
 let tapRunLoopReady = DispatchSemaphore(value: 0)
 
 // MARK: - Yardımcılar
 
-func dockIsAutohide() -> Bool {
+nonisolated func dockIsAutohide() -> Bool {
     return UserDefaults(suiteName: "com.apple.dock")?.bool(forKey: "autohide") ?? false
 }
 
@@ -56,15 +61,14 @@ func dockIsAutohide() -> Bool {
 // Menü çubuğu (üst şerit) AÇIKÇA hariç tutulur — yalnızca yapılandırılmış Dock kenarı dikkate
 // alınır. Auto-hide'da geometri bandı sıfırlandığından imlecin Dock kenarına yakınlığına bakılır.
 // Belirsizlik durumunda true (fail-open) — yanlış "true" yalnızca eski (bir AX hit-test) maliyete döner.
-func clickMightBeOnDock(_ quartzPoint: CGPoint, _ env: EnvSnapshot) -> Bool {
+nonisolated func clickMightBeOnDock(_ quartzPoint: CGPoint, _ env: EnvSnapshot) -> Bool {
     let primaryHeight = env.primaryHeight
     guard primaryHeight > 0 else { return true }                        // bilinmiyor -> fail-open
     let p = CGPoint(x: quartzPoint.x, y: primaryHeight - quartzPoint.y) // Quartz -> AppKit
     guard let s = env.screens.first(where: { $0.frame.contains(p) }) else { return true }
     let f = s.frame, v = s.visible
     // Auto-hide'da Dock görünür alanı daraltmaz; açıldığında kapladığı KALINLIK kadar (ikon boyu +
-    // boşluk + büyütme payı) bir bant kullan. (Eski 6pt "tetikleme bandı" hatası: kullanıcı kenara
-    // değil, açılmış Dock'taki ikona tıklar.) Auto-hide kapalıyken frame/visibleFrame farkı = Dock şeridi.
+    // boşluk + büyütme payı) bir bant kullan.
     let band = max(env.dockTile + 48, 96)
     switch env.orientation {
     case "left":
@@ -81,17 +85,14 @@ func clickMightBeOnDock(_ quartzPoint: CGPoint, _ env: EnvSnapshot) -> Bool {
 
 // İmlecin altındaki Dock uygulama ikonunu çözer: (bundle yolu, başlık). AX C-API'leri iş
 // parçacığı-güvenlidir; tap iş parçacığından çağrılması güvenlidir.
-func dockAppItem(at point: CGPoint) -> (bundlePath: String?, title: String?)? {
-    // Timeout system-wide elemana YAZILMAZ: o çağrı süreç-global varsayılanı değiştirir ve
-    // arka plan kuyruğundaki AX işleriyle çakışırdı. Global varsayılan uygulama açılışında bir
-    // kez set edilir; burada yalnızca yürünen her elemana açık (kısa) timeout verilir.
+nonisolated func dockAppItem(at point: CGPoint) -> (bundlePath: String?, title: String?)? {
     let systemWide = AXUIElementCreateSystemWide()
     var elementRef: AXUIElement?
     guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &elementRef) == .success,
           var element = elementRef else { return nil }
 
     for _ in 0..<4 {
-        AXUIElementSetMessagingTimeout(element, axQuickTimeout)  // takılan uygulama tıklamayı dondurmasın
+        AXUIElementSetMessagingTimeout(element, axQuickTimeout)
         var subroleRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleRef) == .success,
            let subrole = subroleRef as? String, subrole == "AXApplicationDockItem" {
@@ -122,7 +123,7 @@ func dockAppItem(at point: CGPoint) -> (bundlePath: String?, title: String?)? {
 // Sadece POZİTİF olarak "gizlemenin görünür etkisi olmaz" (tam ekran ya da penceresiz) ise true.
 // Hata/belirsizlik -> false (fail-open: eski davranışla gizle, özelliği sessizce kapatma).
 // Yalnızca app.processIdentifier kullanır + AX C-API'leri -> tap iş parçacığından güvenli.
-func hideWouldBeNoOp(_ app: NSRunningApplication) -> Bool {
+nonisolated func hideWouldBeNoOp(_ app: NSRunningApplication) -> Bool {
     let axApp = AXUIElementCreateApplication(app.processIdentifier)
     AXUIElementSetMessagingTimeout(axApp, 0.05)
     var focusedRef: CFTypeRef?
@@ -145,10 +146,10 @@ func hideWouldBeNoOp(_ app: NSRunningApplication) -> Bool {
 }
 
 // MARK: - Olay callback'i (ÖZEL tap iş parçacığında çalışır — ana UI iş parçacığıyla çekişmez)
-func eventTapCallback(proxy: CGEventTapProxy,
-                      type: CGEventType,
-                      event: CGEvent,
-                      refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
+nonisolated func eventTapCallback(proxy: CGEventTapProxy,
+                                  type: CGEventType,
+                                  event: CGEvent,
+                                  refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
     let passthrough = Unmanaged.passUnretained(event)
 
     switch type {
@@ -181,11 +182,6 @@ func eventTapCallback(proxy: CGEventTapProxy,
 
         guard let item = dockAppItem(at: loc) else { return passthrough }
 
-        // NOT: Burada eskiden "çift tıkın 2. tıkını yut" mantığı vardı (az önce gizlenen uygulamayı
-        // Dock yeniden açmasın diye). Kullanıcı tercihi: gizledikten HEMEN SONRA aynı ikona basmak
-        // uygulamayı geri açmalı. İkinci tık artık Dock'a bırakılır (front artık o uygulama
-        // olmadığından aşağıdaki eşleşme zaten başarısız olur ve tık geçer).
-
         guard let front = env.front, !env.frontIsHidden else { return passthrough }
 
         // Kimlik (bundle yolu) ile eşleştir — yeniden adlandırmaya/aynı-isme dayanıklı; yoksa isimle.
@@ -202,7 +198,9 @@ func eventTapCallback(proxy: CGEventTapProxy,
         // Gizlemenin görünür etkisi olmayacaksa (tam ekran / penceresiz) ölü tık yaratma; Dock'a bırak.
         if hideWouldBeNoOp(front) { return passthrough }
 
-        DispatchQueue.main.async { front.hide() }   // AppKit eylemi ana iş parçacığında
+        DispatchQueue.main.async {
+            _ = MainActor.assumeIsolated { front.hide() }   // AppKit eylemi ana iş parçacığında
+        }
         suppressNextLeftMouseUp = true
         return nil
 
@@ -212,48 +210,34 @@ func eventTapCallback(proxy: CGEventTapProxy,
 }
 
 // MARK: - Uygulama denetleyicisi
+@MainActor
 class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var healthTimer: Timer?
     var tapFailureAlertShown = false
-    let hoverController = HoverPreviewController()
-    let hoverMenuItem = NSMenuItem(title: "Pencere Önizlemeleri", action: #selector(toggleHoverPreviews), keyEquivalent: "")
-    let thumbMenuItem = NSMenuItem(title: "Küçük Resimler", action: #selector(toggleThumbnails), keyEquivalent: "")
 
     let statusMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     let pauseMenuItem  = NSMenuItem(title: "Etkin", action: #selector(togglePause), keyEquivalent: "")
     let loginMenuItem  = NSMenuItem(title: "Girişte Otomatik Başlat", action: #selector(toggleLogin), keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Süreç-global AX mesaj timeout'u BİR KEZ burada belirlenir. (System-wide elemana yapılan
-        // her SetMessagingTimeout çağrısı bu globali değiştirir; farklı thread'lerden farklı
-        // değerlerle yazmak çağrıların birbirinin timeout'unu bozmasına yol açıyordu.)
+        // Süreç-global AX mesaj timeout'u BİR KEZ burada belirlenir.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), axQuickTimeout)
         rebuildEnv()
         buildStatusItem()
 
-        // Erişilebilirlik promptu — sadece bir kez (her sağlık kontrolünde değil).
+        // Erişilebilirlik izni kontrolü / promptu
         _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
 
         startTapThread()   // tap callback'ini ana UI iş parçacığından ayır
         syncState()
-        // Varsayılan: kapalı. Kullanıcı bir kez açtıysa kalıcı tercihi uygula.
-        let prefs = UserDefaults.standard
-        let hoverOn = prefs.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false
-        syncHoverController(desired: hoverOn)
 
-        // Küçük resimler açıksa Ekran Kaydı iznini bir kez iste. (Sistem promptu yalnızca ilk
-        // seferde çıkar; sonrasında bu çağrı sessizce false döner ve menüde uyarı gösterilir.)
-        if hoverOn && thumbnailsPreference && WindowThumbnails.shared.isSupported
-            && !WindowThumbnails.shared.hasPermission {
-            WindowThumbnails.shared.requestPermission()
-        }
-
-        // Yedek sağlık zamanlayıcısı: artık izin/tap durumu çoğunlukla olay-tetikli güncelleniyor,
-        // bu yalnızca emniyet ağı -> seyrek aralık + tolerans ile uyandırma birleştirmeye izin ver.
+        // Yedek sağlık zamanlayıcısı
         healthTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
-            self?.syncState()
-            self?.rebuildEnv()   // Dock boyu/yönü/auto-hide değişimini uygulama geçişi olmadan da yakala
+            MainActor.assumeIsolated {
+                self?.syncState()
+                self?.rebuildEnv()   // Dock boyu/yönü/auto-hide değişimini uygulama geçişi olmadan da yakala
+            }
         }
         healthTimer?.tolerance = 5.0
 
@@ -272,22 +256,24 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             name: NSNotification.Name("com.apple.accessibility.api"), object: nil)
     }
 
-    // Uygulama geçişleri kümelenebilir (hover peek'i her satırda bir aktivasyon üretir).
-    // ÖN PLAN bilgisi ASLA geciktirilmez — tap yolu "tıklanan uygulama önde mi" kararını buna
-    // dayandırıyor; bayat front, yanlış uygulamanın gizlenmesine yol açardı. Yalnızca pahalı
-    // geometri/Dock taraması (ekranlar + UserDefaults) debounce edilir.
     var envRebuildPending = false
     @objc func envChanged() {
         publishFrontOnly()
         guard !envRebuildPending else { return }
         envRebuildPending = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.envRebuildPending = false
-            self?.rebuildEnv()
+            MainActor.assumeIsolated {
+                self?.envRebuildPending = false
+                self?.rebuildEnv()
+            }
         }
     }
     @objc func screenChanged() { rebuildEnv() }
-    @objc func axTrustMaybeChanged() { DispatchQueue.main.async { [weak self] in self?.syncState() } }
+    @objc func axTrustMaybeChanged() {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.syncState() }
+        }
+    }
 
     // Ekran geometrisi + Dock durumu + ön plandaki uygulamayı ana iş parçacığında toplayıp yayımla.
     func rebuildEnv() {
@@ -313,8 +299,6 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             frontIsHidden: front?.isHidden ?? false))
     }
 
-    // Yalnızca ön plandaki uygulamayı tazeler: mevcut geometri anlık görüntüsünü olduğu gibi
-    // korur, ekran/Dock taraması yapmaz → uygulama geçişlerinde anında ve ucuz çalışır.
     func publishFrontOnly() {
         let e = currentEnv()
         let front = NSWorkspace.shared.frontmostApplication
@@ -326,9 +310,6 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             frontIsHidden: front?.isHidden ?? false))
     }
 
-    // Tap callback'inin çalışacağı özel, yüksek öncelikli iş parçacığı. Kendi run loop'una sahiptir;
-    // böylece ana iş parçacığı (menü kurma, modal alert) tıklama teslimini gateleyemez ve ana iş
-    // parçacığı dolu olsa bile tap watchdog'u (tapDisabledByTimeout) daha az tetiklenir.
     func startTapThread() {
         let t = Thread {
             tapRunLoop = CFRunLoopGetCurrent()
@@ -363,10 +344,6 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pauseMenuItem)
         loginMenuItem.target = self
         menu.addItem(loginMenuItem)
-        hoverMenuItem.target = self
-        menu.addItem(hoverMenuItem)
-        thumbMenuItem.target = self
-        menu.addItem(thumbMenuItem)
         let axItem = NSMenuItem(title: "Erişilebilirlik Ayarlarını Aç", action: #selector(openAccessibilitySettings), keyEquivalent: "")
         axItem.target = self
         menu.addItem(axItem)
@@ -381,7 +358,7 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         rebuildEnv()
         syncState()
-        refreshMenuItems()   // login durumu dahil tam tazeleme menü açılınca
+        refreshMenuItems()
     }
 
     var tapIsLive: Bool {
@@ -389,7 +366,6 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return CGEvent.tapIsEnabled(tap: tap)
     }
 
-    // Tap/izin yönetimi + hafif durum güncellemesi. trusted'ı bir kez hesaplayıp paylaş (çift sorgu yok).
     func syncState() {
         let trusted = AXIsProcessTrusted()
         if trusted {
@@ -406,7 +382,6 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MissionControlWatcher.shared.stop()
         }
         updateActivationUI(trusted: trusted)
-        syncHoverController(desired: UserDefaults.standard.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false)
     }
 
     func startTap() {
@@ -421,14 +396,13 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if !tapFailureAlertShown {
                 tapFailureAlertShown = true
                 NSApp.activate(ignoringOtherApps: true)
-                showAlert(title: "İzin Gerekli",
-                          text: "DockToggle fare olaylarını dinleyemedi.\n\nSistem Ayarları > Gizlilik ve Güvenlik > Erişilebilirlik'te DockToggle'ı açın.")
+                showAlert(title: "Erişilebilirlik İzni Gerekli",
+                          text: "DockToggle fare olaylarını dinleyebilmek için Erişilebilirlik iznine ihtiyaç duyar.\n\nSistem Ayarları > Gizlilik ve Güvenlik > Erişilebilirlik'te DockToggle'ı açın. İzni verdikten sonra uygulamanın izni algılayabilmesi için DockToggle'ı kapatıp (Çıkış) yeniden açın.")
             }
             return
         }
         eventTap = tap
         tapFailureAlertShown = false
-        // Kaynağı ÖZEL tap iş parçacığının run loop'una ekle (ana run loop'a değil).
         if let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) {
             runLoopSource = source
             if let rl = tapRunLoop {
@@ -451,11 +425,10 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         suppressNextLeftMouseUp = false
     }
 
-    // Hafif: durum metni + ikon soluğu. trusted dışarıdan verilir (çift AXIsProcessTrusted çağrısını önler).
     func updateActivationUI(trusted: Bool = AXIsProcessTrusted()) {
         let live = trusted && tapIsLive
         let statusText: String
-        if !trusted { statusText = "Erişilebilirlik izni gerekli" }
+        if !trusted { statusText = "Erişilebilirlik izni gerekli (verildi ise uygulamayı kapatıp açın)" }
         else if !isEnabled { statusText = "Duraklatıldı" }
         else if live { statusText = "Aktif ✓" }
         else { statusText = "Etkin değil" }
@@ -463,7 +436,6 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem?.button?.appearsDisabled = !(live && isEnabled)
     }
 
-    // Tam tazeleme (menü açılınca / eylemden sonra): login durumu dahil.
     func refreshMenuItems() {
         updateActivationUI()
         pauseMenuItem.state = isEnabled ? .on : .off
@@ -478,68 +450,11 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             loginMenuItem.title = "Girişte Otomatik Başlat"
             loginMenuItem.state = .off
         }
-        hoverMenuItem.state = (UserDefaults.standard.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false) ? .on : .off
-        refreshThumbMenuItem()
     }
 
     @objc func togglePause() {
         isEnabled.toggle()
         if !isEnabled { suppressNextLeftMouseUp = false }
-        syncHoverController(desired: UserDefaults.standard.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false)
-        refreshMenuItems()
-    }
-
-    @objc func toggleHoverPreviews() {
-        let now = !(UserDefaults.standard.object(forKey: "hoverPreviewsEnabled") as? Bool ?? false)
-        UserDefaults.standard.set(now, forKey: "hoverPreviewsEnabled")
-        syncHoverController(desired: now)
-        refreshMenuItems()
-    }
-
-    // Controller yalnızca: özellik açık + Erişilebilirlik izni var + duraklatılmamış iken çalışır.
-    func syncHoverController(desired: Bool) {
-        let live = desired && AXIsProcessTrusted() && isEnabled
-        hoverController.enabled = live
-        hoverController.thumbnailsEnabled = thumbnailsPreference
-        hoverMenuItem.state = desired ? .on : .off
-        refreshThumbMenuItem()
-    }
-
-    var thumbnailsPreference: Bool {
-        return UserDefaults.standard.object(forKey: "thumbnailsEnabled") as? Bool ?? true
-    }
-
-    // Küçük resimler ayrı bir izne (Ekran Kaydı) bağlı; menü öğesi durumu bunu yansıtır.
-    func refreshThumbMenuItem() {
-        let want = thumbnailsPreference
-        if !WindowThumbnails.shared.isSupported {
-            thumbMenuItem.title = "Küçük Resimler (macOS 14+ gerekli)"
-            thumbMenuItem.state = .off
-            thumbMenuItem.isEnabled = false
-            return
-        }
-        thumbMenuItem.isEnabled = true
-        if want && !WindowThumbnails.shared.hasPermission {
-            thumbMenuItem.title = "Küçük Resimler (Ekran Kaydı izni gerekli)"
-            thumbMenuItem.state = .mixed
-        } else {
-            thumbMenuItem.title = "Küçük Resimler"
-            thumbMenuItem.state = want ? .on : .off
-        }
-    }
-
-    @objc func toggleThumbnails() {
-        let now = !thumbnailsPreference
-        UserDefaults.standard.set(now, forKey: "thumbnailsEnabled")
-        hoverController.thumbnailsEnabled = now
-        if now && !WindowThumbnails.shared.hasPermission {
-            // Sistem izin penceresini bir kez göster. TCC'de izin verildikten sonra yakalamanın
-            // etkinleşmesi genellikle uygulamanın yeniden başlatılmasını gerektirir.
-            WindowThumbnails.shared.requestPermission()
-            showAlert(title: "Ekran Kaydı İzni Gerekli",
-                      text: "Küçük resimler için Sistem Ayarları > Gizlilik ve Güvenlik > Ekran Kaydı'nda DockToggle'ı açın.\n\nİzni verdikten sonra DockToggle'ı yeniden başlatın.")
-        }
-        if !now { WindowThumbnails.shared.clearCache() }
         refreshMenuItems()
     }
 
@@ -579,8 +494,6 @@ class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 // MARK: - Giriş noktası
 
-// Tek örnek koruması: aynı bundle ID ile başka kopya çalışıyorsa sessizce çık
-// (doğrudan binary çalıştırma dahil — LSMultipleInstancesProhibited bunu yakalamaz).
 if let bid = NSRunningApplication.current.bundleIdentifier {
     let mePID = NSRunningApplication.current.processIdentifier
     let dupes = NSWorkspace.shared.runningApplications.filter {
@@ -589,10 +502,10 @@ if let bid = NSRunningApplication.current.bundleIdentifier {
     if !dupes.isEmpty { exit(0) }
 }
 
-ProcessInfo.processInfo.enableSuddenTermination()   // durumsuz ajan -> logout/restart'ı bekletme
+ProcessInfo.processInfo.enableSuddenTermination()
 
 let app = NSApplication.shared
 let controller = AppController()
 app.delegate = controller
-app.setActivationPolicy(.accessory)   // Dock'ta kendi ikonu yok; sadece menü çubuğu
+app.setActivationPolicy(.accessory)
 app.run()

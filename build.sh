@@ -42,7 +42,12 @@ else
   # Parola bilinmiyorsa kullanıcıdan iste (Keychain Access diyaloğu çıkar).
   security unlock-keychain "$KC" >/dev/null 2>&1 || true
 fi
-codesign --force --deep --sign "$CERT" "$APP"
+# --options runtime: yerel derleme de dağıtılan artefaktla aynı sertleştirmeyi taşısın,
+# böylece "bende çalışıyordu" farkı oluşmaz (release.sh zaten bunu yapıyor).
+# --deep kullanılmaz: Apple bunu önermiyor, iç bileşenler içten dışa ayrı imzalanmalı.
+# Bu pakette gömülü framework/helper yok, tek Mach-O var.
+codesign --force --options runtime --sign "$CERT" "$APP"
+codesign --verify --strict "$APP" || { echo "İMZA DOĞRULAMASI BAŞARISIZ"; exit 1; }
 
 echo "== Designated requirement (cdhash yerine sertifika kimliği olmalı) =="
 codesign -d -r- "$APP" 2>&1 | tail -3

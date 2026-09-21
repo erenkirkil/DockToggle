@@ -31,6 +31,7 @@ chmod +x "$APP_PATH/Contents/MacOS/DockToggle"
 echo "3. Uygulama imzalanıyor (.app)..."
 # Notarization için --options runtime parametresi zorunludur
 codesign --force --sign "$SIGN_ID" --options runtime --timestamp "$APP_PATH"
+codesign --verify --strict "$APP_PATH" || { echo "İMZA DOĞRULAMASI BAŞARISIZ — dağıtım durduruldu"; exit 1; }
 
 echo "4. DMG oluşturuluyor..."
 rm -f "$DMG_NAME"

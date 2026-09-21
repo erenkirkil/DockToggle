@@ -31,7 +31,17 @@ EXISTING=$(security list-keychains -d user | sed -e 's/^[[:space:]]*//' -e 's/"/
 if ! echo "$EXISTING" | grep -q "docktoggle-signing"; then
   security list-keychains -d user -s "$KC" $EXISTING
 fi
-security unlock-keychain -p docktoggle "$KC" >/dev/null 2>&1 || true
+# Keychain parolası: ortam değişkeni, yoksa make-cert.sh'in ürettiği .signing/keychain-pass.
+KCPASS="${DOCKTOGGLE_KEYCHAIN_PASS:-}"
+if [ -z "$KCPASS" ] && [ -f "$SRC/.signing/keychain-pass" ]; then
+  KCPASS=$(cat "$SRC/.signing/keychain-pass")
+fi
+if [ -n "$KCPASS" ]; then
+  security unlock-keychain -p "$KCPASS" "$KC" >/dev/null 2>&1 || true
+else
+  # Parola bilinmiyorsa kullanıcıdan iste (Keychain Access diyaloğu çıkar).
+  security unlock-keychain "$KC" >/dev/null 2>&1 || true
+fi
 codesign --force --deep --sign "$CERT" "$APP"
 
 echo "== Designated requirement (cdhash yerine sertifika kimliği olmalı) =="

@@ -5,12 +5,27 @@
 set -e
 
 CERTNAME="DockToggle Self-Signed"
-WORK="$HOME/DockToggle-src/.signing"
+# Script nerede duruyorsa .signing onun yanındadır (sabit $HOME yolu bayatlıyordu).
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORK="$SRC/.signing"
 KC="$HOME/Library/Keychains/docktoggle-signing.keychain-db"
-KCPASS="docktoggle"
+# Keychain parolası: ortam değişkeninden alınır. Tanımlı değilse rastgele üretilip
+# $WORK/keychain-pass dosyasına (0600, .signing/ gitignore'da) yazılır. Depoya
+# sabit parola yazılmaz — build.sh aynı dosyadan okur.
+KCPASS="${DOCKTOGGLE_KEYCHAIN_PASS:-}"
 
 mkdir -p "$WORK"
 cd "$WORK"
+
+if [ -z "$KCPASS" ]; then
+  if [ -f "$WORK/keychain-pass" ]; then
+    KCPASS=$(cat "$WORK/keychain-pass")
+  else
+    KCPASS=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+    (umask 077; printf '%s' "$KCPASS" > "$WORK/keychain-pass")
+    echo "== Yeni keychain parolası üretildi: $WORK/keychain-pass (0600) =="
+  fi
+fi
 
 # Zaten varsa tekrar oluşturma
 if security find-identity -v -p codesigning "$KC" 2>/dev/null | grep -q "$CERTNAME"; then

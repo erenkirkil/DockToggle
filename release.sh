@@ -3,8 +3,11 @@ set -e
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_NAME="DockToggle"
-SIGN_ID="Developer ID Application: EREN KIRKIL (992XYS9346)"
-NOTARY_PROFILE="DOCKTOGGLE_PROFILE" # Kullanıcı bunu ayarlamış olmalı
+# İmza kimliği ve notary profili ortam değişkeninden okunur — kimlik repoya girmez.
+# Kendi kimliğini bul:  security find-identity -v -p codesigning
+# Örn:  export DOCKTOGGLE_SIGN_ID="Developer ID Application: ADIN SOYADIN (TEAMID)"
+SIGN_ID="${DOCKTOGGLE_SIGN_ID:?DOCKTOGGLE_SIGN_ID tanımlı değil — 'security find-identity -v -p codesigning' ile kimliğini bul}"
+NOTARY_PROFILE="${DOCKTOGGLE_NOTARY_PROFILE:-DOCKTOGGLE_PROFILE}"   # notarytool store-credentials ile oluşturulur
 VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SRC/Info.plist" 2>/dev/null || echo "1.1.0")
 TAG="v$VERSION"
 DMG_NAME="$SRC/${APP_NAME}_Release.dmg"
